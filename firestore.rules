@@ -1,0 +1,250 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 1. Global Safety Net: Default Deny All
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- REUSABLE SECURITY PRIMITIVES & HELPERS ---
+    
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isEmailVerified() {
+      return isSignedIn() && (request.auth.token.email_verified == true);
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // Bootstrapped Admin: checking the admin collection or the bootstrapped runtime user
+    function isAdmin() {
+      return isEmailVerified() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) || 
+        request.auth.token.email == "obohd314@gmail.com"
+      );
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // --- ENTITY SCHEMA VALIDATORS ---
+
+    function isValidUserSchema(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.name is string && data.name.size() <= 200
+        && data.email is string && data.email.size() <= 256
+        && data.role is string && (data.role == "tenant" || data.role == "landlord" || data.role == "admin")
+        && (data.avatarUrl is string && data.avatarUrl.size() <= 500)
+        && (!("phone" in data) || (data.phone is string && data.phone.size() <= 50))
+        && (!("favorites" in data) || (data.favorites is list && data.favorites.size() <= 100));
+    }
+
+    function isValidPropertySchema(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.title is string && data.title.size() <= 200
+        && data.description is string && data.description.size() <= 5000
+        && data.price is number && data.price > 0 && data.price <= 1000000000
+        && data.location is string && data.location.size() <= 100
+        && data.address is string && data.address.size() <= 500
+        && data.propertyType is string && (data.propertyType == "apartment" || data.propertyType == "penthouse" || data.propertyType == "villa" || data.propertyType == "duplex" || data.propertyType == "studio")
+        && data.bedrooms is int && data.bedrooms >= 0 && data.bedrooms <= 50
+        && data.bathrooms is int && data.bathrooms >= 0 && data.bathrooms <= 50
+        && data.amenities is list && data.amenities.size() <= 50
+        && data.images is list && data.images.size() > 0 && data.images.size() <= 20
+        && (!("videoTourUrl" in data) || (data.videoTourUrl is string && data.videoTourUrl.size() <= 1000))
+        && data.status is string && (data.status == "available" || data.status == "rented")
+        && data.landlordId is string && data.landlordId.size() <= 128
+        && data.landlordName is string && data.landlordName.size() <= 200
+        && data.isApproved is bool
+        && data.views is int && data.views >= 0;
+    }
+
+    function isValidInquirySchema(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.propertyId is string && data.propertyId.size() <= 128
+        && data.propertyTitle is string && data.propertyTitle.size() <= 200
+        && data.landlordId is string && data.landlordId.size() <= 128
+        && data.tenantId is string && data.tenantId.size() <= 128
+        && data.tenantName is string && data.tenantName.size() <= 200
+        && data.tenantEmail is string && data.tenantEmail.size() <= 256
+        && data.message is string && data.message.size() <= 2000
+        && data.type is string && (data.type == "message" || data.type == "inspection")
+        && (!("inspectionDate" in data) || (data.inspectionDate is string && data.inspectionDate.size() <= 50))
+        && (!("inspectionTime" in data) || (data.inspectionTime is string && data.inspectionTime.size() <= 50))
+        && data.status is string && (data.status == "pending" || data.status == "responded" || data.status == "confirmed");
+    }
+
+    function isValidChatSchema(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.propertyId is string && data.propertyId.size() <= 128
+        && data.propertyTitle is string && data.propertyTitle.size() <= 200
+        && data.landlordId is string && data.landlordId.size() <= 128
+        && data.landlordName is string && data.landlordName.size() <= 200
+        && data.tenantId is string && data.tenantId.size() <= 128
+        && data.tenantName is string && data.tenantName.size() <= 200
+        && data.lastMessage is string && data.lastMessage.size() <= 2000;
+    }
+
+    function isValidMessageSchema(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.senderId is string && data.senderId.size() <= 128
+        && data.senderName is string && data.senderName.size() <= 200
+        && data.text is string && data.text.size() <= 2000;
+    }
+
+    // --- CORES & PATH RULES ---
+
+    // 1. Users Collection
+    match /users/{userId} {
+      allow get: if isSignedIn();
+      allow list: if isAdmin();
+      allow create: if isEmailVerified() && userId == request.auth.uid && isValidUserSchema(incoming()) 
+                     && incoming().createdAt == request.time;
+                     
+      allow update: if isEmailVerified() && (
+        // Admin Escape Hatch
+        isAdmin() ||
+        // User updating own profile
+        (userId == request.auth.uid 
+         && isValidUserSchema(incoming())
+         && incoming().id == existing().id
+         && incoming().email == existing().email
+         && (incoming().role == existing().role || isAdmin())  // Lock own role
+         && incoming().createdAt == existing().createdAt)
+      );
+      
+      allow delete: if isAdmin();
+    }
+
+    // 2. Private Admins Collection
+    match /admins/{adminId} {
+      allow read, write: if false; // Under strict control, only manageable via backend
+    }
+
+    // 3. Properties Collection
+    match /properties/{propertyId} {
+      // General read support for guest/users (only authenticated or all to view marketplace listings)
+      allow get, list: if true; 
+      
+      // Landlords can list properties
+      allow create: if isEmailVerified() && isValidPropertySchema(incoming())
+                     && incoming().landlordId == request.auth.uid
+                     && incoming().views == 0
+                     && (incoming().isApproved == false || isAdmin()) // Mandatory moderator review unless admin
+                     && incoming().createdAt == request.time;
+                     
+      allow update: if isEmailVerified() && (
+        isAdmin() ||
+        (existing().landlordId == request.auth.uid 
+         && isValidPropertySchema(incoming())
+         && incoming().id == existing().id
+         && incoming().landlordId == existing().landlordId
+         && (incoming().isApproved == existing().isApproved || isAdmin()) // Forbid self-approval
+         && incoming().createdAt == existing().createdAt) 
+         ||
+        // Allow tenant/public to increment view count
+        (incoming().diff(existing()).affectedKeys().hasOnly(['views']) 
+         && incoming().views == existing().views + 1)
+      );
+      
+      allow delete: if isEmailVerified() && (isAdmin() || existing().landlordId == request.auth.uid);
+    }
+
+    // 4. Inquiries Collection
+    match /inquiries/{inquiryId} {
+      // Landlords or tenants involved can read
+      allow get: if isEmailVerified() && (
+        resource.data.tenantId == request.auth.uid || 
+        resource.data.landlordId == request.auth.uid || 
+        isAdmin()
+      );
+      
+      // Enforced Relational Querying
+      allow list: if isEmailVerified() && (
+        resource.data.tenantId == request.auth.uid || 
+        resource.data.landlordId == request.auth.uid || 
+        isAdmin()
+      );
+      
+      allow create: if isEmailVerified() && isValidInquirySchema(incoming())
+                     && incoming().tenantId == request.auth.uid
+                     && incoming().createdAt == request.time;
+                     
+      allow update: if isEmailVerified() && (
+        isAdmin() ||
+        (resource.data.landlordId == request.auth.uid 
+         && isValidInquirySchema(incoming())
+         && incoming().id == existing().id
+         && incoming().tenantId == existing().tenantId
+         && incoming().landlordId == existing().landlordId
+         && incoming().createdAt == existing().createdAt
+         && incoming().diff(existing()).affectedKeys().hasOnly(['status'])) // landlord can only toggle status of bookings
+      );
+      
+      allow delete: if isEmailVerified() && (resource.data.tenantId == request.auth.uid || isAdmin());
+    }
+
+    // 5. Chats and Chat Messages
+    match /chats/{chatId} {
+      allow get: if isEmailVerified() && (
+        resource.data.tenantId == request.auth.uid || 
+        resource.data.landlordId == request.auth.uid || 
+        isAdmin()
+      );
+      
+      allow list: if isEmailVerified() && (
+        resource.data.tenantId == request.auth.uid || 
+        resource.data.landlordId == request.auth.uid || 
+        isAdmin()
+      );
+      
+      allow create: if isEmailVerified() && isValidChatSchema(incoming())
+                     && (incoming().tenantId == request.auth.uid || incoming().landlordId == request.auth.uid)
+                     && incoming().createdAt == request.time
+                     && incoming().updatedAt == request.time;
+                     
+      allow update: if isEmailVerified() && (
+        isAdmin() ||
+        ((existing().tenantId == request.auth.uid || existing().landlordId == request.auth.uid)
+         && isValidChatSchema(incoming())
+         && incoming().id == existing().id
+         && incoming().tenantId == existing().tenantId
+         && incoming().landlordId == existing().landlordId
+         && incoming().createdAt == existing().createdAt
+         && incoming().updatedAt == request.time)
+      );
+      
+      allow delete: if isAdmin();
+
+      // Nest Chat Messages subcollection
+      match /messages/{messageId} {
+        allow get, list: if isEmailVerified() && (
+          get(/databases/$(database)/documents/chats/$(chatId)).data.tenantId == request.auth.uid ||
+          get(/databases/$(database)/documents/chats/$(chatId)).data.landlordId == request.auth.uid ||
+          isAdmin()
+        );
+        
+        allow create: if isEmailVerified() && isValidMessageSchema(incoming())
+                       && incoming().senderId == request.auth.uid
+                       && incoming().createdAt == request.time
+                       // Relations check with Parent Chat Room to ensure active membership
+                       && (
+                         get(/databases/$(database)/documents/chats/$(chatId)).data.tenantId == request.auth.uid ||
+                         get(/databases/$(database)/documents/chats/$(chatId)).data.landlordId == request.auth.uid
+                       );
+                       
+        allow update, delete: if false; // Chat history inside rooms is immutable once sent
+      }
+    }
+  }
+}
