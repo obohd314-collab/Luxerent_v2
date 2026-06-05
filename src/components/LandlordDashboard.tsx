@@ -7,7 +7,8 @@ import React, { useState, useEffect } from "react";
 import { motion } from "motion/react";
 import { 
   Building2, Plus, Edit2, Trash2, Eye, MessageSquare, Check, X, 
-  MapPin, Loader2, DollarSign, Bed, CheckSquare, RefreshCw, Upload, Image, ShieldAlert
+  MapPin, Loader2, DollarSign, Bed, CheckSquare, RefreshCw, Upload, Image, ShieldAlert,
+  Camera, Smartphone
 } from "lucide-react";
 import { Property, Inquiry, PropertyType } from "../types";
 import { useAuth } from "../context/AuthContext";
@@ -50,6 +51,7 @@ export default function LandlordDashboard({ properties, onRefreshProperties, onO
   ]);
   const [imgInput, setImgInput] = useState<string>("");
   const [submitting, setSubmitting] = useState<boolean>(false);
+  const [uploadingPhoneFile, setUploadingPhoneFile] = useState<boolean>(false);
 
   const [formLatitude, setFormLatitude] = useState<string>("6.4520");
   const [formLongitude, setFormLongitude] = useState<string>("3.4430");
@@ -288,6 +290,76 @@ export default function LandlordDashboard({ properties, onRefreshProperties, onO
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `inquiries/${inq.id}`);
     }
+  };
+
+  const compressAndAddImage = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const img = new window.Image();
+      img.onload = () => {
+        const maxDimension = 1200;
+        let width = img.width;
+        let height = img.height;
+
+        if (width > maxDimension || height > maxDimension) {
+          if (width > height) {
+            height = Math.round((height * maxDimension) / width);
+            width = maxDimension;
+          } else {
+            width = Math.round((width * maxDimension) / height);
+            height = maxDimension;
+          }
+        }
+
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, width, height);
+          const compressedBase64 = canvas.toDataURL("image/jpeg", 0.75);
+          setFormImages(prev => [...prev, compressedBase64]);
+          logFileUploadEvent(
+            file.name,
+            Math.round((compressedBase64.length * 3) / 4 / 1024),
+            profile?.email || "",
+            profile?.name || "Agent",
+            isDemo
+          );
+        } else {
+          if (event.target?.result && typeof event.target.result === "string") {
+            setFormImages(prev => [...prev, event.target.result as string]);
+            logFileUploadEvent(file.name, Math.round(file.size / 1024), profile?.email || "", profile?.name || "Agent", isDemo);
+          }
+        }
+      };
+      img.onerror = () => {
+        if (event.target?.result && typeof event.target.result === "string") {
+          setFormImages(prev => [...prev, event.target.result as string]);
+          logFileUploadEvent(file.name, Math.round(file.size / 1024), profile?.email || "", profile?.name || "Agent", isDemo);
+        }
+      };
+      img.src = event.target?.result as string;
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleLocalFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    setUploadingPhoneFile(true);
+    
+    Array.from(files).forEach((file: File) => {
+      if (!file.type.startsWith("image/")) {
+        alert("Please upload valid image files only.");
+        return;
+      }
+      compressAndAddImage(file);
+    });
+
+    setUploadingPhoneFile(false);
+    e.target.value = "";
   };
 
   const handlePushImage = () => {
@@ -643,46 +715,88 @@ export default function LandlordDashboard({ properties, onRefreshProperties, onO
                 />
               </div>
 
-              {/* Add multiple images url block */}
-              <div className="md:col-span-6 space-y-2 pt-2 border-t border-dotted border-neutral-200 dark:border-purple-900/40">
-                <label className="text-xs font-mono text-neutral-400 flex items-center gap-1">
-                  <Image className="w-3.5 h-3.5 text-purple-400" /> Image Galleries (At least 1 high-res image URL required)
-                </label>
-                
-                <div className="flex gap-2">
-                  <input
-                    id="landlord-image-url-feed"
-                    type="text"
-                    placeholder="Paste modern unsplash link or image address..."
-                    value={imgInput}
-                    onChange={(e) => setImgInput(e.target.value)}
-                    className="flex-1 bg-neutral-100 dark:bg-purple-950/20 border border-neutral-200 dark:border-purple-900/20 rounded-xl px-3 py-2 text-xs focus:outline-none text-neutral-700 dark:text-neutral-100"
-                  />
-                  <button
-                    id="plus-img-btn"
-                    type="button"
-                    onClick={handlePushImage}
-                    className="px-4 py-2 bg-blue-500 hover:bg-blue-600 rounded-xl text-white text-xs font-mono cursor-pointer transition flex items-center gap-1"
-                  >
-                    ADD <Plus className="w-3 h-3" />
-                  </button>
+              {/* Add multiple images block */}
+              <div className="md:col-span-6 space-y-3 pt-2 border-t border-dotted border-neutral-200 dark:border-purple-900/40">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-mono text-neutral-400 flex items-center gap-1.5 uppercase font-bold tracking-wider">
+                    <Image className="w-4 h-4 text-purple-400" /> Image Galleries (Upload photo / camera capture or enter URLs)
+                  </label>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  {/* Option A: Direct Camera / Gallery Upload tailored for mobile phones */}
+                  <div className="relative group border-2 border-dashed border-neutral-300 dark:border-purple-900/45 rounded-2xl p-4 bg-neutral-50/50 dark:bg-[#0f0c21]/30 hover:border-brand-purple hover:bg-neutral-100/50 dark:hover:bg-purple-950/20 transition duration-300 flex flex-col items-center justify-center text-center cursor-pointer min-h-[110px]">
+                    <input
+                      id="phone-image-file-input"
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      onChange={handleLocalFileUpload}
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                    />
+                    <div className="p-2.5 bg-purple-500/15 text-purple-600 dark:text-purple-300 rounded-full mb-1.5 duration-300 group-hover:scale-105">
+                      <Camera className="w-4 h-4" />
+                    </div>
+                    <span className="text-xs font-sans font-bold text-neutral-800 dark:text-neutral-200">
+                      Snap Photo or Choose from Phone
+                    </span>
+                    <p className="text-[9px] font-mono text-neutral-400 mt-0.5 leading-normal max-w-[210px]">
+                      Launches mobile camera directly or accesses camera roll gallery.
+                    </p>
+                    
+                    {uploadingPhoneFile && (
+                      <div className="absolute inset-0 bg-white/95 dark:bg-[#0c0a15]/95 rounded-2xl flex items-center justify-center gap-2 z-20">
+                        <Loader2 className="w-4 h-4 animate-spin text-brand-purple" />
+                        <span className="text-xs font-mono text-brand-purple font-bold">Resizing high-res image...</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Option B: Standard URL Paste */}
+                  <div className="border border-neutral-200 dark:border-purple-900/20 rounded-2xl p-4 bg-neutral-50/30 dark:bg-purple-955/5 flex flex-col justify-between space-y-3">
+                    <div className="space-y-1.5">
+                      <span className="text-[10px] block font-mono text-neutral-400 uppercase tracking-wide">Or Paste Image Web Link / URL:</span>
+                      <input
+                        id="landlord-image-url-feed"
+                        type="text"
+                        placeholder="https://images.unsplash.com/photo-..."
+                        value={imgInput}
+                        onChange={(e) => setImgInput(e.target.value)}
+                        className="w-full bg-neutral-100 dark:bg-purple-950/20 border border-neutral-200 dark:border-purple-900/20 rounded-xl px-3 py-2 text-xs focus:outline-none text-neutral-800 dark:text-neutral-200 font-mono text-[9px]"
+                      />
+                    </div>
+                    <button
+                      id="plus-img-btn"
+                      type="button"
+                      onClick={handlePushImage}
+                      className="w-full py-2 bg-purple-500 hover:bg-purple-600 text-white font-semibold rounded-xl text-xs font-mono cursor-pointer transition-all duration-300 flex items-center justify-center gap-1.5 shadow-premium"
+                    >
+                      ADD BY ADDR <Plus className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
 
                 {/* List of active images */}
-                <div className="flex flex-wrap gap-2 pt-1">
-                  {formImages.map((img, i) => (
-                    <div key={i} className="relative w-16 h-12 rounded-lg overflow-hidden group border border-neutral-200 dark:border-purple-905">
-                      <img src={img} referrerPolicy="no-referrer" className="w-full h-full object-cover" />
-                      <button
-                        id={`btn-del-img-${i}`}
-                        type="button"
-                        onClick={() => handlePopImage(i)}
-                        className="absolute inset-0 bg-red-650/80 cursor-pointer text-white text-[9px] opacity-0 group-hover:opacity-100 transition flex items-center justify-center font-bold"
-                      >
-                        REMOVE
-                      </button>
-                    </div>
-                  ))}
+                <div className="space-y-1.5 pt-1.5">
+                  <span className="text-[10px] block font-mono text-neutral-400 uppercase italic">
+                    {formImages.length} image{formImages.length !== 1 ? 's' : ''} loaded in current gallery:
+                  </span>
+                  
+                  <div className="flex flex-wrap gap-2.5">
+                    {formImages.map((img, i) => (
+                      <div key={i} className="relative w-20 h-14 rounded-xl overflow-hidden group border border-neutral-200 dark:border-purple-950/40 shadow-sm">
+                        <img src={img} referrerPolicy="no-referrer" className="w-full h-full object-cover" />
+                        <button
+                          id={`btn-del-img-${i}`}
+                          type="button"
+                          onClick={() => handlePopImage(i)}
+                          className="absolute inset-0 bg-red-600/90 cursor-pointer text-white text-[9px] font-mono font-bold uppercase tracking-wider opacity-0 group-hover:opacity-100 transition duration-200 flex items-center justify-center"
+                        >
+                          REMOVE
+                        </button>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
 

@@ -25,9 +25,10 @@ import TenantDashboard from "./components/TenantDashboard";
 import AdminDashboard from "./components/AdminDashboard";
 import AIRecommendations from "./components/AIRecommendations";
 import RentalMapView from "./components/RentalMapView";
+import { LuxeRentLogo } from "./components/LuxeRentLogo";
 
 function AppContent() {
-  const { profile, loading, loginGoogle, loginEmail, signupEmail, logout, setDemoProfile } = useAuth();
+  const { profile, loading, loginGoogle, loginEmail, signupEmail, logout } = useAuth();
   
   // Navigation tabs: 'home' | 'search' | 'map' | 'recommend' | 'dashboard'
   const [activeTab, setActiveTab] = useState<"home" | "search" | "map" | "recommend" | "dashboard">("home");
@@ -63,9 +64,6 @@ function AppContent() {
 
   // Mobile drawer links state
   const [showMobileNavbar, setShowMobileNavbar] = useState<boolean>(false);
-
-  // Port Demo helper menu lists
-  const [showDemoList, setShowDemoList] = useState<boolean>(false);
 
   // 1. Dual Mode Loader: Fetch from Firestore & Seeder Fallback
   const fetchAndRegisterProperties = async () => {
@@ -126,6 +124,14 @@ function AppContent() {
     }
   }, []);
 
+  // Secure Route Protection - redirect unauthorized users trying to access dashboard tab
+  useEffect(() => {
+    if (!loading && !profile && activeTab === "dashboard") {
+      setActiveTab("home");
+      setShowAuthModal(true);
+    }
+  }, [profile, loading, activeTab]);
+
   // Filter application pipeline
   const filteredProperties = properties.filter((p) => {
     // Vetting verification match: only show approved listings in directory searches (except for landlords/admins)
@@ -145,7 +151,34 @@ function AppContent() {
     return matchesSearch && matchesLocation && matchesType && matchesBeds && matchesPrice;
   });
 
-  // Handle simulated signup/signin submit
+  // Form error mapper
+  const getFriendlyAuthErrorMessage = (err: any): string => {
+    const code = err?.code || "";
+    if (code === "auth/wrong-password") {
+       return "Incorrect password. Please try again.";
+    }
+    if (code === "auth/user-not-found") {
+       return "User account not found. Please register first.";
+    }
+    if (code === "auth/invalid-credential") {
+       return "Invalid email or password. Please verify your credentials.";
+    }
+    if (code === "auth/email-already-in-use") {
+       return "The email address is already registered.";
+    }
+    if (code === "auth/invalid-email") {
+       return "Please enter a valid email address.";
+    }
+    if (code === "auth/network-request-failed") {
+       return "A network error occurred. Please check your internet connection.";
+    }
+    if (code === "auth/weak-password") {
+       return "The password is too weak. Please choose a stronger password.";
+    }
+    return err?.message || "An unexpected credentials verification error occurred.";
+  };
+
+  // Handle signup/signin submit via real Firebase Authentication
   const handleAuthSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError(null);
@@ -153,12 +186,13 @@ function AppContent() {
       if (authFormTab === "signin") {
         await loginEmail(authEmail, authPassword);
       } else {
-        await signupEmail(authEmail, authName, authRole, authPhone);
+        await signupEmail(authEmail, authPassword, authName, authRole, authPhone);
       }
       setShowAuthModal(false);
       setAuthPassword("");
+      setActiveTab("dashboard"); // Automatically redirect after successful sign in
     } catch (err: any) {
-      setAuthError(err?.message || "Credentials authentication check stalled.");
+      setAuthError(getFriendlyAuthErrorMessage(err));
     }
   };
 
@@ -171,13 +205,6 @@ function AppContent() {
       const chatTabBtn = document.getElementById("tenant-tab-chats");
       chatTabBtn?.click();
     }, 150);
-  };
-
-  // Quick switch fast role trigger tool helper
-  const triggerFastSwitch = (role: UserRole) => {
-    setDemoProfile(role);
-    setShowDemoList(false);
-    setActiveTab("dashboard");
   };
 
   const formatNaira = (value: number) => {
@@ -212,15 +239,9 @@ function AppContent() {
           <button 
             id="navbar-logo-btn"
             onClick={() => setActiveTab("home")}
-            className="flex items-center gap-2.5 cursor-pointer relative group"
+            className="flex items-center gap-2 cursor-pointer relative group"
           >
-            <div className="p-2.5 rounded-xl bg-gradient-to-br from-violet-600 via-purple-600 to-amber-500 text-white shadow-premium group-hover:scale-105 duration-300">
-              <Building2 className="w-5 h-5" />
-            </div>
-            <div className="text-left font-display">
-              <span className="text-base sm:text-lg font-bold uppercase tracking-widest text-transparent bg-clip-text bg-gradient-to-r from-purple-500 via-pink-500 to-brand-gold">LuxeRent</span>
-              <span className="block text-[8px] font-mono text-neutral-400 font-bold uppercase tracking-widest">Nigeria Lease Oracle</span>
-            </div>
+            <LuxeRentLogo size="md" />
           </button>
 
           {/* Core directory tabs menu - desktop navigation */}
@@ -287,54 +308,6 @@ function AppContent() {
 
           {/* Action Hub tools */}
           <div className="flex items-center gap-3">
-            
-            {/* Quick switcher helper trigger menu */}
-            <div className="relative">
-              <button
-                id="portal-fast-switcher-toggle"
-                onClick={() => setShowDemoList(!showDemoList)}
-                className="py-1.5 px-3 rounded-lg border border-neutral-200 dark:border-purple-900/30 text-[10px] font-mono font-bold text-neutral-700 dark:text-purple-300 bg-white dark:bg-purple-950/20 cursor-pointer shadow-premium hover:border-purple-500/40 active:scale-95 transition-all duration-300"
-              >
-                ⚡ DEPLOY SIMULATOR
-              </button>
-
-              <AnimatePresence>
-                {showDemoList && (
-                  <motion.div
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: 10 }}
-                    className="absolute right-0 mt-2.5 w-48 rounded-xl bg-white dark:bg-[#110e19] border border-neutral-200 dark:border-purple-900/30 shadow-premium p-2.5 space-y-1 z-50 font-mono text-[9px]"
-                  >
-                    <p className="text-[8px] text-neutral-400 px-2 py-1 uppercase tracking-wider border-b border-neutral-100 dark:border-purple-950/30 font-bold">Select Sandbox Persona</p>
-                    <button
-                      id="role-tenant-fast"
-                      onClick={() => triggerFastSwitch("tenant")}
-                      className="w-full text-left p-1.5 cursor-pointer rounded hover:bg-purple-500/15 text-neutral-700 dark:text-neutral-200 flex items-center justify-between"
-                    >
-                      <span>Resident Tenant</span>
-                      <span className="text-[8px] text-neutral-450 uppercase">Tenant</span>
-                    </button>
-                    <button
-                      id="role-landlord-fast"
-                      onClick={() => triggerFastSwitch("landlord")}
-                      className="w-full text-left p-1.5 cursor-pointer rounded hover:bg-purple-500/15 text-neutral-700 dark:text-neutral-200 flex items-center justify-between"
-                    >
-                      <span>Leasing Landlord</span>
-                      <span className="text-[8px] text-neutral-450 uppercase">Owner</span>
-                    </button>
-                    <button
-                      id="role-admin-fast"
-                      onClick={() => triggerFastSwitch("admin")}
-                      className="w-full text-left p-1.5 cursor-pointer rounded hover:bg-purple-500/15 text-neutral-700 dark:text-neutral-200 flex items-center justify-between"
-                    >
-                      <span>System Admin</span>
-                      <span className="text-[8px] text-rose-400 font-bold uppercase">Admin</span>
-                    </button>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </div>
 
             {/* Dynamic Authenticated Profile trigger view */}
             {profile ? (
@@ -895,19 +868,6 @@ function AppContent() {
                         Go to Firebase Console ↗
                       </a>
                     )}
-
-                    {/* Fallback to Demo Mode */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setDemoProfile("tenant");
-                        setShowAuthModal(false);
-                        setAuthError(null);
-                      }}
-                      className="w-full py-1.5 bg-neutral-200/10 hover:bg-neutral-200/20 text-neutral-300 rounded-lg cursor-pointer transition text-[10px]"
-                    >
-                      Run in Offline Sandbox / Demo Mode
-                    </button>
                   </div>
                 </div>
               )}

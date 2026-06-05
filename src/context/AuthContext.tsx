@@ -31,11 +31,10 @@ interface AuthContextType {
   isDemo: boolean;
   loginGoogle: () => Promise<void>;
   loginEmail: (email: string, password: string) => Promise<void>;
-  signupEmail: (email: string, name: string, role: UserRole, phone?: string) => Promise<void>;
+  signupEmail: (email: string, password: string, name: string, role: UserRole, phone?: string) => Promise<void>;
   updateUserProfile: (data: Partial<UserProfile>) => Promise<void>;
   logout: () => Promise<void>;
   toggleFavorite: (propertyId: string) => Promise<void>;
-  setDemoProfile: (role: UserRole) => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -44,9 +43,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
-  const [isDemo, setIsDemo] = useState<boolean>(false);
+  const [isDemo] = useState<boolean>(false);
 
-  // Sync user profile from Firestore or local storage on state change
+  // Sync user profile from Firestore on state change
   const syncProfile = async (firebaseUser: FirebaseUser) => {
     try {
       const userDocRef = doc(db, "users", firebaseUser.uid);
@@ -72,10 +71,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         logRegistration(newProfile.email, newProfile.name, false);
         logLogin(newProfile.email, newProfile.name, false);
       }
-      setIsDemo(false);
     } catch (err) {
-      console.warn("Could not sync with firestore cloud, using local fallback profile:", err);
-      // Construct fallback profile locally
+      console.warn("Could not sync with firestore cloud, using secure local profile fallback:", err);
+      // Construct fallback profile locally for the real authenticated Firebase user
       const fallback: UserProfile = {
         id: firebaseUser.uid,
         name: firebaseUser.displayName || "Client User",
@@ -86,22 +84,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         favorites: []
       };
       setProfile(fallback);
-      setIsDemo(true);
-      logLogin(fallback.email, fallback.name, true);
+      logLogin(fallback.email, fallback.name, false);
     }
   };
 
   useEffect(() => {
-    // Check if we have persistent demo credentials first
-    const localDemo = localStorage.getItem("luxerent_demo_profile");
-    if (localDemo) {
-      const parsed = JSON.parse(localDemo) as UserProfile;
-      setProfile(parsed);
-      setIsDemo(true);
-      setLoading(false);
-      return;
-    }
-
+    // Check if onAuthStateChanged can grab the authenticated user
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       setLoading(true);
       if (currentUser) {
@@ -119,8 +107,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // 1. Google Auth Popup
   const loginGoogle = async () => {
-    // To prevent browser popup blockers from triggering, we call signInWithPopup 
-    // synchronously on the immediate interaction thread, delaying state updates
     const provider = new GoogleAuthProvider();
     try {
       const result = await signInWithPopup(auth, provider);
@@ -137,7 +123,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  // 2. Email Sign In
+  // 2. Email Sign In (Pure Firebase Auth only)
   const loginEmail = async (email: string, password: string) => {
     setLoading(true);
     try {
@@ -147,41 +133,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         await syncProfile(result.user);
       }
     } catch (err: any) {
-      console.warn("Firebase Auth Error, matching email directly for local premium sandbox:", err);
-      logSuspiciousActivity("Failed Login Attempt", `Unresolved login credential error for email: ${email}`, email, true);
-      
-      // Fallback: If Firebase failed/unconfigured, create seamless simulation
-      let simulatedRole: UserRole = "tenant";
-      if (email.includes("landlord")) simulatedRole = "landlord";
-      if (email.includes("admin") || email === "obohd314@gmail.com") simulatedRole = "admin";
-      
-      const cleanName = email.split("@")[0];
-      const simProfile: UserProfile = {
-        id: `demo_${cleanName}`,
-        name: cleanName.charAt(0).toUpperCase() + cleanName.slice(1),
-        email: email,
-        avatarUrl: `https://api.dicebear.com/7.x/bottts/svg?seed=${cleanName}`,
-        role: simulatedRole,
-        createdAt: new Date().toISOString(),
-        favorites: []
-      };
-      
-      localStorage.setItem("luxerent_demo_profile", JSON.stringify(simProfile));
-      setProfile(simProfile);
-      setIsDemo(true);
-      logLogin(simProfile.email, simProfile.name, true);
+      console.error("Firebase email sign-in failed:", err);
+      logSuspiciousActivity("Failed Login Attempt", `Unresolved login credential error for email: ${email}`, email, false);
+      throw err;
     } finally {
       setLoading(false);
     }
   };
 
-  // 3. Email Sign Up
-  const signupEmail = async (email: string, name: string, role: UserRole, phone?: string) => {
+  // 3. Email Sign Up (Pure Firebase Auth registration)
+  const signupEmail = async (email: string, password: string, name: string, role: UserRole, phone?: string) => {
     setLoading(true);
     try {
-      // Setup mock password for simple signups to streamline Firebase Auth
-      const dummyPassword = "Pass_Rent_Secure_101";
-      const result = await createUserWithEmailAndPassword(auth, email, dummyPassword);
+      const result = await createUserWithEmailAndPassword(auth, email, password);
       if (result.user) {
         await updateProfile(result.user, { displayName: name });
         setUser(result.user);
@@ -200,26 +164,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         };
         await setDoc(userDocRef, newProfile);
         setProfile(newProfile);
-        setIsDemo(false);
       }
-    } catch (err) {
-      console.warn("Error creating cloud profile, using Sandbox Simulator creation:", err);
-      // Local Sandbox creation
-      const simProfile: UserProfile = {
-        id: `demo_${name.toLowerCase().replace(/\s/g, "_")}`,
-        name,
-        email,
-        avatarUrl: `https://api.dicebear.com/7.x/bottts/svg?seed=${name}`,
-        role: email === "obohd314@gmail.com" ? "admin" : role,
-        phone,
-        createdAt: new Date().toISOString(),
-        favorites: []
-      };
-      localStorage.setItem("luxerent_demo_profile", JSON.stringify(simProfile));
-      setProfile(simProfile);
-      setIsDemo(true);
-      logRegistration(email, name, true);
-      logLogin(email, name, true);
+    } catch (err: any) {
+      console.error("Firebase email signup failed:", err);
+      throw err;
     } finally {
       setLoading(false);
     }
@@ -231,9 +179,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const updated = { ...profile, ...data };
     setProfile(updated);
 
-    if (isDemo) {
-      localStorage.setItem("luxerent_demo_profile", JSON.stringify(updated));
-    } else if (user) {
+    if (user) {
       const userRef = doc(db, "users", user.uid);
       try {
         await updateDoc(userRef, data as any);
@@ -254,31 +200,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await updateUserProfile({ favorites: updatedFavs });
   };
 
-  // 6. Direct fast switch helper for quick portal overview evaluation
-  const setDemoProfile = (role: UserRole) => {
-    const defaultProfile: UserProfile = {
-      id: `sandbox_${role}_99`,
-      name: role === "admin" ? "Ademola Oboh (Admin Specialist)" : role === "landlord" ? "Chief Aliyu (Elite Landlord)" : "Burna Dev (Elite Tenant)",
-      email: role === "admin" ? "obohd314@gmail.com" : `${role}@luxerent.com`,
-      avatarUrl: `https://api.dicebear.com/7.x/avataaars/svg?seed=${role}`,
-      role: role,
-      createdAt: new Date().toISOString(),
-      favorites: ["prop_lekki_duplex"]
-    };
-    
-    localStorage.setItem("luxerent_demo_profile", JSON.stringify(defaultProfile));
-    setProfile(defaultProfile);
-    setIsDemo(true);
-  };
-
-  // 7. Logout Session
+  // 6. Logout Session
   const logout = async () => {
     setLoading(true);
     const oldProfile = profile;
-    localStorage.removeItem("luxerent_demo_profile");
     try {
       if (oldProfile) {
-        logLogout(oldProfile.email, oldProfile.name, isDemo);
+        logLogout(oldProfile.email, oldProfile.name, false);
       }
       await signOut(auth);
     } catch (err) {
@@ -286,7 +214,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } finally {
       setUser(null);
       setProfile(null);
-      setIsDemo(false);
       setLoading(false);
     }
   };
@@ -302,8 +229,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       signupEmail,
       updateUserProfile,
       logout,
-      toggleFavorite,
-      setDemoProfile
+      toggleFavorite
     }}>
       {children}
     </AuthContext.Provider>
